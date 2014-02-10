@@ -212,6 +212,33 @@ function toClassName(contractName: string): string {
 	return contractName.replace(/I(\w+)Contract/, "$1");
 }
 
+function escapeDotNetClassName(name: string): string {
+	return name.replace(/`/g, "_");
+}
+
+function swaggerTypeToTypescriptType(swaggerType: string): string {
+	swaggerType = escapeDotNetClassName(swaggerType);
+
+	switch (swaggerType) {
+		case "int":
+			return "number";
+		case "List":
+			return "any[]";
+	}
+
+	var listMatch = swaggerType.match(/^List\[([^\]]+)\]$/);
+	if (listMatch) {
+		return swaggerTypeToTypescriptType(listMatch[1]) + "[]";
+	}
+
+	var mapMatch = swaggerType.match(/^Map\[([^,]+),([^\]]+)\]$/)
+	if (mapMatch) {
+		return util.format("{ [key: %s]: %s }", swaggerTypeToTypescriptType(mapMatch[1]), swaggerTypeToTypescriptType(mapMatch[2]));
+	}
+
+	return swaggerType;
+}
+
 class CodePrinter {
 	private indent = "";
 	private lines = [];
@@ -251,20 +278,67 @@ export class ServiceContractProvider implements Server.IServiceContractProvider 
 	constructor(private $httpClient: Server.IHttpClient) {
 	}
 
-	getApi(): Server.Contract.IService[] {
-		var req:any = {
-			proto: config.AB_SERVER_PROTO,
-			host: config.AB_SERVER,
-			path: "/api",
-			method: "GET"
-		};
+	getApi(): IFuture<Server.Contract.ISwaggerApiDeclaration[]> {
+		return (() => {
+			var apiJsonReq = {
+				proto: config.AB_SERVER_PROTO,
+				host: config.AB_SERVER,
+				path: "/api",
+				method: "GET"
+			};
 
-		var result = this.$httpClient.httpRequest(req).wait();
-		if (result.error) {
-			throw result.error;
-		} else {
-			return JSON.parse(result.body);
-		}
+			var apiJson: Server.Contract.IService[];
+			var apiJsonResponse = this.$httpClient.httpRequest(apiJsonReq).wait();
+			if (apiJsonResponse.error) {
+				throw apiJsonResponse.error;
+			} else {
+				apiJson = JSON.parse(apiJsonResponse.body);
+			}
+
+			var directoryReq:any = {
+				proto: config.AB_SERVER_PROTO,
+				host: config.AB_SERVER,
+				path: "/api/swagger",
+				method: "GET"
+			};
+
+			var directory: Server.Contract.ISwaggerResourceListing;
+			var directoryResponse = this.$httpClient.httpRequest(directoryReq).wait();
+			if (directoryResponse.error) {
+				throw directoryResponse.error;
+			} else {
+				directory = JSON.parse(directoryResponse.body);
+			}
+
+			var apis = _.map(directory.apis, (value, index, list) => {
+				return (() => {
+					var apiReq = {
+						proto: config.AB_SERVER_PROTO,
+						host: config.AB_SERVER,
+						path: "/api/swagger" + value.path
+					};
+					var apiResponse = this.$httpClient.httpRequest(apiReq).wait();
+					if (apiResponse.error) {
+						throw apiResponse.error;
+					} else {
+						var apiDecl: Server.Contract.ISwaggerApiDeclaration = JSON.parse(apiResponse.body);
+						var apiJsonDesc =_.find(apiJson, (aj) => "/api/" + aj.endpoint === apiDecl.basePath);
+						apiDecl.contract = apiJsonDesc.name;
+						apiDecl.endpoint = apiJsonDesc.endpoint;
+
+						Object.keys(apiDecl.models).forEach((model) => apiDecl.models[model].id = escapeDotNetClassName(apiDecl.models[model].id));
+
+						apiDecl.apis.forEach((api) => {
+							api.operations.forEach((op) => op.path = api.path);
+						})
+						return apiDecl;
+					}
+				}).future<Server.Contract.ISwaggerApiDeclaration>()();
+			});
+			Future.wait(apis);
+
+			return _.map(apis, (api) => api.get());
+		}).future<Server.Contract.ISwaggerApiDeclaration[]>()();
 	}
 }
 $injector.register("serviceContractProvider", ServiceContractProvider);
@@ -274,7 +348,7 @@ export class ServiceContractGenerator implements Server.IServiceContractGenerato
 	}
 
 	public generate(): Server.IServiceContractClientCode {
-		var api = this.$serviceContractProvider.getApi();
+		var apiDecl = this.$serviceContractProvider.getApi().wait();
 
 		var intf = new CodePrinter();
 		var impl = new CodePrinter();
@@ -292,110 +366,129 @@ export class ServiceContractGenerator implements Server.IServiceContractGenerato
 		intf.writeLine("//");
 		intf.writeLine("declare module Server {");
 
-		api.sort(function(a, b) {
-			return a.name.localeCompare(b.name);
+		apiDecl.sort(function(a, b) {
+			return a.basePath.localeCompare(b.basePath);
 		});
 
-		for (var i = 0; i < api.length; ++i) {
-			var intfName = api[i].name;
+		for (var i = 0; i < apiDecl.length; ++i) {
+			var models = _.map(apiDecl[i].models, (element, key, map) => element);
+			models.sort((a, b) => a.id.localeCompare(b.id));
+
+			models.forEach((model) => {
+
+				intf.writeLine("interface %s {", model.id);
+
+				var properties = _.map(model.properties, (element, key, map) => {
+					element.name = key;
+					return element;
+				});
+				properties.sort((a, b) => a.name.localeCompare(b.name));
+
+				properties.forEach((property) => {
+					intf.writeLine("%s: %s;", property.name, swaggerTypeToTypescriptType(property.type));
+				});
+
+				intf.writeLine("}");
+			});
+
+			var intfName = apiDecl[i].contract;
 			intf.writeLine("interface %s {", intfName);
 			var className = toClassName(intfName);
 			impl.writeLine("export class %s implements Server.%s {", className, intfName);
 			impl.writeLine("constructor(private $serviceProxy: Server.IServiceProxy) {");
 			impl.writeLine("}");
 
-			var operations = api[i].operations;
+			var operations: Server.Contract.ISwaggerOperation[] = _.union.apply(null, _.map(apiDecl[i].apis, (api) => api.operations));
 			operations.sort(function(a, b) {
-				return a.name.localeCompare(b.name);
+				return a.nickname.localeCompare(b.nickname);
 			});
 
 			for (var oi = 0; oi < operations.length; ++oi) {
 				var op = operations[oi];
-				var paramNames = _.map(op.parameters, (p) => escapeKeyword(p.name) + ": " + (p.binding.type === "Body" ? "any" : "string"));
+				var paramNames = _.map(op.parameters, (p) => escapeKeyword(p.name) + (p.required ? "" : "?") + ": " +
+					(p.paramType === "body" ? "any" : swaggerTypeToTypescriptType(p.dataType)));
 
-				if (op.responseType === "application/octet-stream") {
+				if (op.responseClass === "file") {
 					paramNames.push("$resultStream: any");
 				}
 
-				var returnType = op.responseType && op.responseType !== "application/octet-stream" ? "any" : "void";
+				var returnType = op.responseClass !== "file" ? swaggerTypeToTypescriptType(op.responseClass) : "void";
 
 				var signature = util.format("%s(%s): IFuture<%s>",
-					op.name[0].toLowerCase() + op.name.substr(1),
+					op.nickname[0].toLowerCase() + op.nickname.substr(1),
 					paramNames.join(", "), returnType);
-
-				var actionPath = _.filter(
-					["/" + api[i].endpoint].concat(op.routePrefixes, [op.actionName]),
-					(part) => !!part).join("/");
-				var pathComponents = [quote(actionPath)];
-				var queryParams = [];
-
+//
+//				var actionPath = _.filter(
+//					["/" + api[i].endpoint].concat(op.routePrefixes, [op.actionName]),
+//					(part) => !!part).join("/");
+//				var pathComponents = [quote(actionPath)];
+//				var queryParams = [];
+//
 				intf.writeLine(signature + ";");
 				impl.writeLine(signature + " {");
 
 				var bodyParams = [];
 
-				for (var pi = 0; pi < op.parameters.length; ++pi) {
-					var param = op.parameters[pi];
-
+				op.parameters.forEach((param) => {
 					var paramName = escapeKeyword(param.name);
 
-					switch (param.binding.type) {
-						case "Route":
-							if (param.routePrefixes && param.routePrefixes.length > 0) {
-								pathComponents.push("'" + param.routePrefixes.join("/") + "'");
-							}
-							pathComponents.push(util.format("encodeURI(%s.replace(/\\\\/g, '/'))", paramName));
-							if (param.routeSuffixes && param.routeSuffixes.length > 0) {
-								pathComponents.push("'" + param.routeSuffixes.join("/") + "'");
-							}
-							break;
-
-						case "Query":
-							queryParams.push(paramName);
-							break;
-
-						case "Body":
-							var contentType = param.binding.contentType;
-							if (contentType === "application/json") {
-								paramName = util.format("JSON.stringify(%s)", paramName);
-							}
-							bodyParams.push(util.format("{name: '%s', value: %s, contentType: %s}",
-								param.name, paramName, contentType ? quote(contentType) : "null"));
-							break;
+					switch (param.paramType) {
+//						case "Route":
+//							if (param.routePrefixes && param.routePrefixes.length > 0) {
+//								pathComponents.push("'" + param.routePrefixes.join("/") + "'");
+//							}
+//							pathComponents.push(util.format("encodeURI(%s.replace(/\\\\/g, '/'))", paramName));
+//							if (param.routeSuffixes && param.routeSuffixes.length > 0) {
+//								pathComponents.push("'" + param.routeSuffixes.join("/") + "'");
+//							}
+//							break;
+//
+//						case "Query":
+//							queryParams.push(paramName);
+//							break;
+//
+//						case "Body":
+//							var contentType = param.binding.contentType;
+//							if (contentType === "application/json") {
+//								paramName = util.format("JSON.stringify(%s)", paramName);
+//							}
+//							bodyParams.push(util.format("{name: '%s', value: %s, contentType: %s}",
+//								param.name, paramName, contentType ? quote(contentType) : "null"));
+//							break;
 					}
-				}
-
-				if (op.routeSuffixes && op.routeSuffixes.length > 0) {
-					pathComponents.push("'" + op.routeSuffixes.join("/") + "'");
-				}
-
-				var pathVar: string;
-
-				if (pathComponents.length === 1) {
-					pathVar = pathComponents[0];
-				} else {
-					pathVar = util.format("[%s].join('/')", pathComponents.join(", "));
-				}
-				if (queryParams.length > 0) {
-					pathVar += util.format(" + '?' + querystring.stringify({ %s })",
-						_.map(queryParams, (p) => util.format("'%s': %s", p, p)).join(", "));
-				}
-
-				var args = [quote(op.name), quote(op.httpMethod), pathVar];
-				args.push(op.responseType ? quote(op.responseType) : "null");
-
-				switch (bodyParams.length) {
-					case 0:
-						args.push("null");
-						break;
-					default:
-						args.push(util.format("[%s]", bodyParams.join(", ")));
-						break;
-				}
-
-				args.push(op.responseType === "application/octet-stream" ? "$resultStream" : "null");
-
-				impl.writeLine("return this.$serviceProxy.call<%s>(%s);", returnType, args.join(", "));
+				});
+//
+//				if (op.routeSuffixes && op.routeSuffixes.length > 0) {
+//					pathComponents.push("'" + op.routeSuffixes.join("/") + "'");
+//				}
+//
+//				var pathVar: string;
+//
+//				if (pathComponents.length === 1) {
+//					pathVar = pathComponents[0];
+//				} else {
+//					pathVar = util.format("[%s].join('/')", pathComponents.join(", "));
+//				}
+//				if (queryParams.length > 0) {
+//					pathVar += util.format(" + '?' + querystring.stringify({ %s })",
+//						_.map(queryParams, (p) => util.format("'%s': %s", p, p)).join(", "));
+//				}
+//
+//				var args = [quote(op.name), quote(op.httpMethod), pathVar];
+//				args.push(op.responseType ? quote(op.responseType) : "null");
+//
+//				switch (bodyParams.length) {
+//					case 0:
+//						args.push("null");
+//						break;
+//					default:
+//						args.push(util.format("[%s]", bodyParams.join(", ")));
+//						break;
+//				}
+//
+//				args.push(op.responseType === "application/octet-stream" ? "$resultStream" : "null");
+//
+//				impl.writeLine("return this.$serviceProxy.call<%s>(%s);", returnType, args.join(", "));
 				impl.writeLine("}");
 			}
 
@@ -405,16 +498,16 @@ export class ServiceContractGenerator implements Server.IServiceContractGenerato
 
 		intf.writeLine("interface IServer {");
 		impl.writeLine("export class Server {");
-		for (var i = 0; i < api.length; ++i) {
-			intf.writeLine("%s: %s;", api[i].endpoint, api[i].name);
-			impl.writeLine("public %s = $injector.resolve(%s);", api[i].endpoint, toClassName(api[i].name));
+		for (var i = 0; i < apiDecl.length; ++i) {
+			intf.writeLine("%s: %s;", apiDecl[i].endpoint, apiDecl[i].contract);
+			impl.writeLine("public %s = $injector.resolve(%s);", apiDecl[i].endpoint, toClassName(apiDecl[i].contract));
 		}
 		intf.writeLine("}");
 		impl.writeLine("}");
 		impl.writeLine("$injector.register('server', Server);");
 
 		intf.writeLine("}");
-
+//
 		return {
 			interfaceFile: intf.toString(),
 			implementationFile: impl.toString()

@@ -10,8 +10,8 @@ export class GenerateServerApiCommand implements ICommand {
 
 	execute(args: string[]):void {
 		var result = this.$serviceContractGenerator.generate();
-		fs.writeFileSync(path.join(__dirname, "../server-api.d.ts"), result.interfaceFile);
-		fs.writeFileSync(path.join(__dirname, "../server-api.ts"), result.implementationFile);
+		fs.writeFileSync(path.join(__dirname, "../../server-api2.d.ts"), result.interfaceFile);
+		fs.writeFileSync(path.join(__dirname, "../../server-api2.ts"), result.implementationFile);
 	}
 }
 $injector.registerCommand("dev-generate-api", GenerateServerApiCommand);
