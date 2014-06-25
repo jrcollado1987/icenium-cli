@@ -129,3 +129,6 @@ $injector.require("sharedUserSettingsService", "./services/user-settings-service
 $injector.require("futureDispatcher", "./appbuilder-cli");
 
 $injector.require("pathFilteringService", "./services/path-filtering");
+
+$injector.requireCommand("nativescript|create", "./nativescript-cli/commands/create");
+$injector.requireCommand("nativescript|build", "./nativescript-cli/commands/build");

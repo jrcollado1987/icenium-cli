@@ -1,19 +1,28 @@
 
-export class AndroidRequirements {
+export class AndroidRequirements{
 
-	public checkRequirements(): boolean {
+	constructor(private $childProcess: IChildProcess) { }
+
+	public checkRequirements(): IFuture<boolean>  {
 		return this.checkAndroid() && this.checkAnt() && this.checkJava();
 	}
 
-	private checkAndroid(): boolean {
-		return true;
+	private checkAndroid(): IFuture<boolean> {
+		return(() => {
+			var output = this.$childProcess.exec("android list targets").wait();
+			return true;
+		}).future<boolean>()();
 	}
 
-	private checkJava(): boolean {
-		return true;
+	private checkJava(): IFuture<boolean> {
+		return (() => {
+			return true;
+		}).future<boolean>()();
 	}
 
-	private checkAnt(): boolean {
-		return true;
+	private checkAnt(): IFuture<boolean> {
+		return (() => {
+			return true;
+		}).future<boolean>()();
 	}
 }

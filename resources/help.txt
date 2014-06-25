@@ -743,3 +743,9 @@ All data gathered is used strictly for improving the product and will never be u
              for improving the product and will never be used to identify or contact you.
     disable - Disables anonymous usage statistics tracking.
 --[/]--
+
+--[nativescript]--
+--[/]--
+
+--[nativescript|create]--
+--[/]--
