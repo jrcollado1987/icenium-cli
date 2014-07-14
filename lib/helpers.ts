@@ -55,7 +55,7 @@ export function isNumber(n) {
 }
 
 export function toHash(collection, keySelector, valueSelector): any {
-	var result = {};
+	var result = Object.create(null);
 	if (_.isArray(collection)) {
 		for (var i = 0; i < collection.length; ++i) {
 			result[keySelector(collection[i], i, collection)] =
@@ -124,7 +124,7 @@ export function isWindows32() {
 }
 
 export function isDarwin() {
-	return process.platform.toUpperCase() === "DARWIN";
+	return process.platform === "darwin";
 }
 
 export function stringReplaceAll(string: string, find: any, replace: string): string {
