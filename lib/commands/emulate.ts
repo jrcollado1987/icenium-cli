@@ -8,6 +8,88 @@ var iconv = require("iconv-lite");
 import helpers = require("../helpers");
 import MobileHelper = require("../mobile/mobile-helper");
 
+class AndroidPlatformServices implements IEmulatorPlatformServices {
+	constructor(private $logger: ILogger
+		,private $project: Project.IProject
+		,private $errors: IErrors
+		,private $childProcess: IChildProcess) {}
+
+	checkAvailability(): IFuture<void> {
+		return (() => {
+			if (!_.contains(this.$project.projectTargets.wait(), "android")) {
+				this.$errors.fail("The current project does not target android and cannot be run in the Android emulator.");
+			}
+		}).future<void>()();
+	}
+
+	run(image: string) : IFuture<void> {
+		return (() => {
+			this.$logger.info("Starting emulator (Android)...");
+			var childProcess = this.$childProcess.spawn('emulator', ['-avd', image],
+				{ stdio:  ["ignore", "ignore", "ignore"], detached: true });
+			childProcess.unref();
+		}).future<void>()();
+	}
+}
+$injector.register("android", AndroidPlatformServices);
+
+class IosPlatformServices implements IEmulatorPlatformServices {
+	constructor(private $logger: ILogger
+		,private $project: Project.IProject
+		,private $errors: IErrors
+		,private $childProcess: IChildProcess) {}
+
+	checkAvailability(): IFuture<void> {
+		return (() => {
+			if (!_.contains(this.$project.projectTargets.wait(), "ios")) {
+				this.$errors.fail("The current project does not target iOS and cannot be run in the iOS Simulator.");
+			}
+			if (!helpers.isDarwin()) {
+				this.$errors.fail("iOS Simulator is available only on Mac OS X.");
+			}
+		}).future<void>()();
+	}
+
+	run(image: string) : IFuture<void> {
+		return (() => {
+			this.$logger.info("Starting emulator (iOS)...");
+			var childProcess = this.$childProcess.spawn('open', [
+					IosPlatformServices.IOS_EMULATOR_APP,
+				],
+				{ stdio:  ["ignore", "ignore", "ignore"], detached: true });
+			childProcess.unref();
+		}).future<void>()();
+	}
+
+	private static IOS_EMULATOR_APP = "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Applications/iPhone Simulator.app";
+}
+$injector.register("ios", IosPlatformServices);
+
+class Wp8PlatformServices implements IEmulatorPlatformServices {
+	constructor(private $logger: ILogger
+		,private $project: Project.IProject
+		,private $errors: IErrors
+		,private $childProcess: IChildProcess) {}
+
+	checkAvailability(): IFuture<void> {
+		return (() => {
+			if (!_.contains(this.$project.projectTargets.wait(), "wp8")) {
+				this.$errors.fail("The current project does not target Windows Phone 8 and cannot be run in the Windows Phone emulator.");
+			}
+			if (!helpers.isWindows()) {
+				this.$errors.fail("Windows Phone Emulator is available only on Windows 8 or later.");
+			}
+		}).future<void>()();
+	}
+
+	run(image: string) : IFuture<void> {
+		return (() => {
+
+		}).future<void>()();
+	}
+}
+$injector.register("wp8", Wp8PlatformServices);
+
 //	Name: Toshe
 //	Device: Nexus 4 (Google)
 //	Path: /Users/totev/.android/avd/Toshe.avd
@@ -16,7 +98,11 @@ import MobileHelper = require("../mobile/mobile-helper");
 //	Skin: WXGA800-7in
 //	Sdcard: 128M
 
-interface IAvdInfo {
+interface IEmulatorInfo {
+	emulator: string;
+}
+
+interface IAvdInfo extends IEmulatorInfo {
 	target: string;
 	targetNum: number;
 	path: string;
@@ -33,8 +119,12 @@ export class EmulateCommand {
 				,private $fs: IFileSystem
 				,private $project: Project.IProject
 				,private $projectTypes: IProjectTypes
+				,private $buildService: Project.IBuildService
 				,private $loginManager: ILoginManager
-				,private $childProcess: IChildProcess) {
+				,private $android: IEmulatorPlatformServices
+				,private $ios: IEmulatorPlatformServices
+				,private $wp8: IEmulatorPlatformServices
+		) {
 		this.$project.ensureProject();
 		this.$loginManager.ensureLoggedIn().wait();
 		iconv.extendNodeEncodings();
@@ -49,9 +139,13 @@ export class EmulateCommand {
 				var avds = _.map(this.getAvds().wait(), avd => this.getInfoFromAvd(avd).wait());
 				emulators = Array.prototype.concat(emulators, avds);
 			} else if (!args.length || args[0].toLowerCase() === 'ios') {
-
+				if (args[0].toLowerCase() === 'ios' && !helpers.isDarwin()) {
+					this.$errors.fail("iOS Simulator is available only on Mac OS X.");
+				}
 			} else if (!args.length || args[0].toLowerCase() === 'wp8') {
-
+				if (args[0].toLowerCase() === 'wp8' && !helpers.isWindows()) {
+					this.$errors.fail("Windows Phone Emulator is available only on Windows 8 or later.");
+				}
 			}
 
 			_.each(emulators, avd => this.$logger.out(avd));
@@ -67,20 +161,29 @@ export class EmulateCommand {
 			}
 
 			if (args[0].toLowerCase() === 'android') {
-				if (!_.contains(this.$project.projectTargets.wait(), "android")) {
-					this.$errors.fail("The current project does not target android and cannot be run in the Android emulator.");
-				}
+				this.$android.checkAvailability();
 
 				var image: string = args[1] || this.getBestFit().wait();
 				if (image) {
-					this.runAndroidEmulator(image).wait();
+					this.$android.run(image).wait();
 				} else {
 					this.$errors.fail("Could not find an emulator image to run your project.");
 				}
-			} else if (!args.length || args[0].toLowerCase() === 'ios') {
+			} else if (args[0].toLowerCase() === 'ios') {
+				this.$ios.checkAvailability();
 
-			} else if (!args.length || args[0].toLowerCase() === 'wp8') {
+				this.$buildService.build({platform: "ios",
+					configuration: "Debug",
+					showQrCodes: !options.download,
+					downloadFiles: options.download,
+					downloadedFilePath: options["save-to"],
+					provisionTypes: provisionTypes
+				}).wait();
 
+				this.$ios.run(null);
+			} else if (args[0].toLowerCase() === 'wp8') {
+				this.$wp8.checkAvailability();
+				this.$wp8.run(null); // TODO
 			}
 
 		}).future<void>()();
@@ -141,6 +244,7 @@ export class EmulateCommand {
 			},
 			avdInfo  || <IAvdInfo>Object.create(null));
 			avdInfo.name = avdName;
+			avdInfo.emulator = "Android";
 
 			return avdInfo;
 		}).future<IAvdInfo>()();
@@ -163,15 +267,6 @@ export class EmulateCommand {
 			}
 			return encoding;
 		}).future<any>()();
-	}
-
-	private runAndroidEmulator(avd: string): IFuture<void> {
-		return (() => {
-			this.$logger.info("Starting emulator...");
-			var childProcess = this.$childProcess.spawn('emulator', ['-avd', avd],
-				{ stdio:  ["ignore", "ignore", "ignore"], detached: true });
-			childProcess.unref();
-		}).future<void>()();
 	}
 
 	private static ANDROID_DIR_NAME = ".android";
