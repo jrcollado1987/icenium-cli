@@ -8,7 +8,7 @@ var options:any = require("./options");
 import util = require("util");
 import helpers = require("./helpers");
 import os = require("os");
-import MobileHelper = require("./mobile/mobile-helper");
+import MobileHelper = require("./common/mobile/mobile-helper");
 
 export class Project implements Project.IProject {
 	private cachedProjectDir: string = "";

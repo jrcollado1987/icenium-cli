@@ -4,7 +4,6 @@
 import path = require("path");
 import Future = require("fibers/future");
 import helpers = require("../helpers");
-import MobileHelper = require("../mobile/mobile-helper");
 
 export class SimulateCommand implements ICommand {
 	private static PLUGINS_PACKAGE_IDENTIFIER: string = "Plugins";
