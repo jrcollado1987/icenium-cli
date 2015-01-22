@@ -26,7 +26,7 @@ declare module Server {
 	}
 
 	interface IServiceContractProvider {
-		getApi(): Server.Contract.IService[];
+		getApi(): IFuture<Server.Contract.ISwaggerApiDeclaration[]>;
 	}
 
 	interface IIdentityManager {
@@ -104,6 +104,52 @@ declare module Server.Contract {
 		name: string;
 		endpoint: string;
 		operations: IOperation[];
+	}
+
+	interface ISwaggerResource {
+		path: string;
+	}
+
+	interface ISwaggerResourceListing {
+		apis: ISwaggerResource[];
+	}
+
+	interface ISwaggerOperation {
+		path: string;
+		httpMethod: string;
+		nickname: string;
+		responseClass: string;
+		parameters: {
+			required: boolean;
+			name: string;
+			dataType: string;
+			paramType: string;
+		}[];
+	}
+
+	interface ISwaggerMethod {
+		path: string;
+		operations: ISwaggerOperation[];
+	}
+
+	interface ISwaggerApiDeclaration {
+		basePath: string;
+		contract: string;
+		endpoint: string;
+
+		models: {
+			[typeName: string]: {
+				id: string;
+				properties: {
+					[propertyName: string]: {
+						name: string;
+						type: string;
+					}
+				}
+			};
+		};
+
+		apis: ISwaggerMethod[];
 	}
 }
 
